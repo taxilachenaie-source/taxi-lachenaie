@@ -419,17 +419,136 @@ export default function ChauffeurPage() {
   }
 }
   async function completeReservation(
-    reservationId: number
-  ) {
-    const ok = window.confirm(
-      "Voulez-vous vraiment terminer cette course ?"
+  reservationId: number
+) {
+  const ok = window.confirm(
+    "Voulez-vous vraiment terminer cette course ?"
+  );
+
+  if (!ok) return;
+
+  try {
+    setActionLoading(reservationId);
+
+    const { data } = await supabase.auth.getSession();
+
+    if (!data.session) {
+      alert("Session introuvable.");
+      return;
+    }
+
+    const response = await fetch(
+      `/api/chauffeur/reservations/${reservationId}/complete`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${data.session.access_token}`,
+          "Content-Type": "application/json",
+        },
+      }
     );
 
-    if (!ok) return;
+    const rawResponse = await response.text();
+
+    let result: {
+      success?: boolean;
+      error?: string;
+      message?: string;
+      driver?: Driver;
+      commissionAmount?: number;
+      newBalance?: number;
+    };
 
     try {
-      setActionLoading(reservationId);
+      result = JSON.parse(rawResponse);
+    } catch {
+      console.error("Réponse API non JSON :", rawResponse);
 
+      alert(
+        `Réponse serveur invalide. Code HTTP : ${response.status}`
+      );
+      return;
+    }
+
+    if (!response.ok || !result.success) {
+      alert(
+        result.error ||
+          "Impossible de terminer la course."
+      );
+      return;
+    }
+
+    /*
+     * Mise à jour immédiate du chauffeur.
+     * Il devient Disponible sans attendre un rafraîchissement.
+     */
+    if (result.driver) {
+      setDriver(result.driver);
+    } else {
+      setDriver((currentDriver) =>
+        currentDriver
+          ? {
+              ...currentDriver,
+              status: "Disponible",
+              current_position: "Garage Taxi Lachenaie",
+            }
+          : currentDriver
+      );
+    }
+
+    /*
+     * On retire immédiatement la course terminée
+     * de la liste affichée.
+     */
+    setReservations((currentReservations) =>
+      currentReservations.filter(
+        (reservation) =>
+          reservation.id !== reservationId
+      )
+    );
+
+    /*
+     * On supprime aussi toute alerte liée à cette course.
+     */
+    setNewReservation(null);
+    currentAlertIdRef.current = null;
+    stopAlertSound();
+
+    alert(
+      `Course terminée.\nStatut : Disponible\nCommission : ${Number(
+        result.commissionAmount ?? 0
+      ).toFixed(2)} $\nNouveau solde : ${Number(
+        result.newBalance ?? 0
+      ).toFixed(2)} $`
+    );
+
+    /*
+     * Vérification finale avec les données de Supabase.
+     */
+    await loadDriver();
+  } catch (error) {
+    console.error("Erreur fin de course :", error);
+
+    alert(
+      error instanceof Error
+        ? `Impossible de terminer la course : ${error.message}`
+        : "Impossible de terminer la course."
+    );
+  } finally {
+    setActionLoading(null);
+  }
+}
+
+
+  async function updateStatus() {
+    if (!driver) return;
+
+    const newStatus =
+      driver.status === "Disponible"
+        ? "Hors ligne"
+        : "Disponible";
+
+    try {
       const { data } = await supabase.auth.getSession();
 
       if (!data.session) {
@@ -437,45 +556,30 @@ export default function ChauffeurPage() {
         return;
       }
 
-      const response = await fetch(
-        `/api/chauffeur/reservations/${reservationId}/complete`,
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${data.session.access_token}`,
-            "Content-Type": "application/json",
-          },
-        }
-      );
+      const response = await fetch("/api/chauffeur/status", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${data.session.access_token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ status: newStatus }),
+      });
 
       const result = await response.json();
 
       if (!response.ok || !result.success) {
-        alert(
-          result.error ||
-            "Impossible de terminer la course."
-        );
+        alert(result.error || "Impossible de modifier le statut.");
         return;
       }
 
-      alert(
-        `Course terminée.\nCommission : ${
-          result.commissionAmount ?? 0
-        } $\nNouveau solde : ${
-          result.newBalance ?? 0
-        } $`
+      setDriver((currentDriver) =>
+        currentDriver
+          ? { ...currentDriver, status: newStatus }
+          : currentDriver
       );
-
-      await loadDriver();
     } catch (error) {
-      console.error(
-        "Erreur fin de course :",
-        error
-      );
-
-      alert("Impossible de terminer la course.");
-    } finally {
-      setActionLoading(null);
+      console.error("Erreur changement de statut :", error);
+      alert("Impossible de modifier le statut.");
     }
   }
 
@@ -738,12 +842,42 @@ export default function ChauffeurPage() {
           </h2>
 
           <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-            <Info
-              label="Statut"
-              value={
-                driver.status || "Disponible"
-              }
-            />
+            <div className="rounded-xl bg-slate-50 p-4">
+  <p className="text-sm text-slate-500">Statut</p>
+
+  <div className="mt-3 flex flex-col gap-3">
+    <span
+      className={`w-fit rounded-full px-4 py-2 font-bold text-white ${
+        driver.status === "Disponible"
+          ? "bg-green-600"
+          : driver.status === "Occupé"
+          ? "bg-red-600"
+          : driver.status === "Pause"
+          ? "bg-yellow-500"
+          : "bg-slate-500"
+      }`}
+    >
+      {driver.status || "Hors ligne"}
+    </span>
+
+    {driver.status !== "Occupé" && (
+      <button
+        type="button"
+        onClick={() => void updateStatus()}
+        disabled={actionLoading !== null}
+        className={`rounded-xl px-5 py-3 font-bold text-white disabled:cursor-not-allowed disabled:opacity-50 ${
+          driver.status === "Disponible"
+            ? "bg-slate-700 hover:bg-slate-800"
+            : "bg-green-600 hover:bg-green-700"
+        }`}
+      >
+        {driver.status === "Disponible"
+          ? "⚫ Passer hors ligne"
+          : "🟢 Se mettre disponible"}
+      </button>
+    )}
+  </div>
+</div>
 
             <Info
               label="Position"

@@ -171,21 +171,38 @@ if (!authentication.user) {
      * Si la course possède déjà une facture,
      * on évite de créer une deuxième facture.
      */
-    if (reservation.invoice_id) {
-      await supabaseServer
-        .from("drivers")
-        .update({
-          status: "Disponible",
-          current_reservation_id: null,
-        })
-        .eq("current_reservation_id", reservationId);
+   if (reservation.invoice_id) {
+  const { error: releaseDriverError } = await supabaseServer
+    .from("drivers")
+    .update({
+      status: "Disponible",
+      current_trip_id: null,
+      current_reservation_id: null,
+      current_position: "Garage Taxi Lachenaie",
+    })
+    .eq("id", reservation.driver_id);
 
-      return NextResponse.json({
-        success: true,
-        message: "La course était déjà terminée.",
-        invoiceId: reservation.invoice_id,
-      });
-    }
+  if (releaseDriverError) {
+    console.error(
+      "Erreur libération chauffeur :",
+      releaseDriverError
+    );
+
+    return NextResponse.json(
+      {
+        success: false,
+        error: releaseDriverError.message,
+      },
+      { status: 500 }
+    );
+  }
+
+  return NextResponse.json({
+    success: true,
+    message: "La course était déjà terminée.",
+    invoiceId: reservation.invoice_id,
+  });
+}
 
     const finishedAt = new Date().toISOString();
 
@@ -319,14 +336,17 @@ if (!authentication.user) {
     /*
      * Le chauffeur redevient disponible
      */
-    const { error: driverError } =
-      await supabaseServer
-        .from("drivers")
-        .update({
-          status: "Disponible",
-          current_reservation_id: null,
-        })
-        .eq("current_reservation_id", reservationId);
+    const { data: updatedDriver, error: driverError } =
+  await supabaseServer
+    .from("drivers")
+    .update({
+      status: "Disponible",
+      current_trip_id: null,
+      current_position: "Garage Taxi Lachenaie",
+    })
+    .eq("id", reservation.driver_id)
+    .select("id, status, current_trip_id")
+    .maybeSingle();
 
     if (driverError) {
       console.error(
@@ -336,7 +356,16 @@ if (!authentication.user) {
 
       throw new Error(driverError.message);
     }
-
+if (!updatedDriver) {
+  return NextResponse.json(
+    {
+      success: false,
+      error:
+        "La course est terminée, mais le chauffeur n’a pas été trouvé.",
+    },
+    { status: 404 }
+  );
+}
     return NextResponse.json({
       success: true,
       message: "Course terminée avec succès.",

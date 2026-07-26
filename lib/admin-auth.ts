@@ -19,22 +19,47 @@ export type AdminAuthResult =
   | AdminAuthSuccess
   | AdminAuthFailure;
 
+/**
+ * Récupère la liste des courriels administrateurs configurés
+ * dans ADMIN_EMAILS ou ADMIN_EMAIL.
+ *
+ * Formats acceptés :
+ * ADMIN_EMAIL=admin@exemple.com
+ *
+ * ADMIN_EMAILS=admin@exemple.com,autre@exemple.com
+ *
+ * Les séparateurs acceptés sont :
+ * - virgule
+ * - point-virgule
+ * - retour à la ligne
+ */
 function getAuthorizedAdminEmails(): string[] {
   const configuredEmails =
-    process.env.ADMIN_EMAILS ||
-    process.env.ADMIN_EMAIL ||
+    process.env.ADMIN_EMAILS?.trim() ||
+    process.env.ADMIN_EMAIL?.trim() ||
     "";
 
-  return configuredEmails
-    .split(",")
-    .map((email) => email.trim().toLowerCase())
-    .filter(Boolean);
+  if (!configuredEmails) {
+    return [];
+  }
+
+  return Array.from(
+    new Set(
+      configuredEmails
+        .split(/[,;\n\r]+/)
+        .map((email) => email.trim().toLowerCase())
+        .filter(Boolean)
+    )
+  );
 }
 
+/**
+ * Vérifie qu'une requête provient d'un utilisateur Supabase
+ * authentifié et dont le courriel fait partie des administrateurs.
+ */
 export async function requireAdmin(
   request: Request
 ): Promise<AdminAuthResult> {
-    console.log("ADMIN_EMAILS =", process.env.ADMIN_EMAILS);
   const authorization =
     request.headers.get("authorization");
 
@@ -64,10 +89,16 @@ export async function requireAdmin(
   } = await supabaseServer.auth.getUser(accessToken);
 
   if (userError || !user) {
+    console.error(
+      "Erreur de vérification de la session administrateur :",
+      userError
+    );
+
     return {
       success: false,
       status: 401,
-      error: "Session invalide ou expirée.",
+      error:
+        "Session invalide ou expirée. Veuillez vous reconnecter.",
     };
   }
 
@@ -77,15 +108,17 @@ export async function requireAdmin(
     return {
       success: false,
       status: 403,
-      error: "Adresse courriel utilisateur introuvable.",
+      error:
+        "Aucune adresse courriel n’est associée à ce compte.",
     };
   }
 
-  const authorizedEmails = getAuthorizedAdminEmails();
+  const authorizedEmails =
+    getAuthorizedAdminEmails();
 
   if (authorizedEmails.length === 0) {
     console.error(
-      "ADMIN_EMAILS ou ADMIN_EMAIL n’est pas configuré."
+      "Configuration administrateur manquante : ajoutez ADMIN_EMAILS ou ADMIN_EMAIL dans .env.local."
     );
 
     return {
@@ -97,10 +130,15 @@ export async function requireAdmin(
   }
 
   if (!authorizedEmails.includes(email)) {
+    console.warn(
+      `Accès administrateur refusé pour le compte : ${email}`
+    );
+
     return {
       success: false,
       status: 403,
-      error: "Accès administrateur refusé.",
+      error:
+        "Ce compte n’est pas autorisé à accéder à l’administration.",
     };
   }
 

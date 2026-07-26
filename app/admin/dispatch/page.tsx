@@ -34,6 +34,40 @@ export default function DispatchPage() {
   const [dispatchQueues, setDispatchQueues] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
+  async function getAdminSession() {
+    const {
+      data: { session },
+      error,
+    } = await supabase.auth.getSession();
+
+    if (error) {
+      console.error("Erreur récupération session admin :", error);
+      throw new Error(
+        "Impossible de vérifier votre session. Veuillez vous reconnecter."
+      );
+    }
+
+    if (!session) {
+      throw new Error(
+        "Authentification requise. Veuillez vous reconnecter comme administrateur."
+      );
+    }
+
+    return session;
+  }
+
+  async function readJsonResponse(response: Response) {
+    const rawResponse = await response.text();
+
+    try {
+      return rawResponse ? JSON.parse(rawResponse) : {};
+    } catch {
+      throw new Error(
+        `Réponse API invalide. Code HTTP : ${response.status}`
+      );
+    }
+  }
+
   useEffect(() => {
     loadAll();
 
@@ -103,81 +137,115 @@ export default function DispatchPage() {
   }
 
   async function assignDriver(reservationId: number, driverId: number) {
-    const response = await fetch("/api/admin/assign-driver", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        reservation_id: reservationId,
-        driver_id: driverId,
-      }),
-    });
+    try {
+      const session = await getAdminSession();
 
-    const data = await response.json();
+      const response = await fetch("/api/admin/assign-driver", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          reservation_id: reservationId,
+          driver_id: driverId,
+        }),
+      });
 
-    if (!data.success) {
-      alert(data.error);
-      return;
+      const data = await readJsonResponse(response);
+
+      if (!response.ok || !data.success) {
+        throw new Error(
+          data.error || "Impossible d’attribuer le chauffeur."
+        );
+      }
+
+      await loadAll();
+      window.alert("🚖 Chauffeur assigné avec succès.");
+    } catch (error) {
+      console.error("Erreur attribution chauffeur :", error);
+      window.alert(
+        error instanceof Error
+          ? error.message
+          : "Impossible d’attribuer le chauffeur."
+      );
     }
-
-    await loadAll();
-    alert("🚖 Chauffeur assigné avec succès.");
   }
 
   async function topUpDriver(driverId: number, amount: number) {
-    const response = await fetch(`/api/admin/drivers/${driverId}/topup`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ amount }),
-    });
+    try {
+      const session = await getAdminSession();
 
-    const data = await response.json();
+      const response = await fetch(
+        `/api/admin/drivers/${driverId}/topup`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${session.access_token}`,
+          },
+          body: JSON.stringify({ amount }),
+        }
+      );
 
-    if (!data.success) {
-      alert(data.error);
-      return;
+      const data = await readJsonResponse(response);
+
+      if (!response.ok || !data.success) {
+        throw new Error(
+          data.error || "Impossible d’ajouter le solde."
+        );
+      }
+
+      await loadAll();
+      window.alert(
+        `Solde ajouté. Nouveau solde : ${data.newBalance} $`
+      );
+    } catch (error) {
+      console.error("Erreur ajout de solde :", error);
+      window.alert(
+        error instanceof Error
+          ? error.message
+          : "Impossible d’ajouter le solde."
+      );
     }
-
-    await loadAll();
-    alert(`Solde ajouté. Nouveau solde : ${data.newBalance} $`);
   }
 
   async function autoDispatch(reservationId: number) {
+    try {
+      const session = await getAdminSession();
 
-  const {
-    data: { session },
-  } = await supabase.auth.getSession();
+      const response = await fetch("/api/admin/auto-dispatch", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          reservation_id: reservationId,
+        }),
+      });
 
-  if (!session) {
-    alert("Vous devez être connecté.");
-    return;
+      const data = await readJsonResponse(response);
+
+      if (!response.ok || !data.success) {
+        throw new Error(
+          data.error || "Impossible d’effectuer l’auto-dispatch."
+        );
+      }
+
+      await loadAll();
+      window.alert(
+        `🚖 Course attribuée à ${data.driver?.name || "un chauffeur"}`
+      );
+    } catch (error) {
+      console.error("Erreur auto-dispatch :", error);
+      window.alert(
+        error instanceof Error
+          ? error.message
+          : "Impossible d’effectuer l’auto-dispatch."
+      );
+    }
   }
-
-  const response = await fetch("/api/admin/auto-dispatch", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${session.access_token}`,
-    },
-    body: JSON.stringify({
-      reservation_id: reservationId,
-    }),
-  });
-
-  const data = await response.json();
-
-  if (!data.success) {
-    alert(data.error);
-    return;
-  }
-
-  await loadAll();
-
-  alert(`🚖 Course attribuée à ${data.driver.name}`);
-}
 
   const onlineDrivers = useMemo(
     () => drivers.filter((driver) => driver.latitude && driver.longitude),
@@ -258,27 +326,42 @@ export default function DispatchPage() {
 
     return { reservation, candidates };
   });
-async function forceNextDriver(reservationId: number) {
-  const response = await fetch("/api/admin/dispatch-next", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      reservation_id: reservationId,
-    }),
-  });
+  async function forceNextDriver(reservationId: number) {
+    try {
+      const session = await getAdminSession();
 
-  const data = await response.json();
+      const response = await fetch("/api/admin/dispatch-next", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${session.access_token}`,
+        },
+        body: JSON.stringify({
+          reservation_id: reservationId,
+        }),
+      });
 
-  if (!data.success) {
-    alert(data.error);
-    return;
+      const data = await readJsonResponse(response);
+
+      if (!response.ok || !data.success) {
+        throw new Error(
+          data.error ||
+            "Impossible de passer au chauffeur suivant."
+        );
+      }
+
+      await loadAll();
+      window.alert("Course envoyée au chauffeur suivant.");
+    } catch (error) {
+      console.error("Erreur passage chauffeur suivant :", error);
+      window.alert(
+        error instanceof Error
+          ? error.message
+          : "Impossible de passer au chauffeur suivant."
+      );
+    }
   }
 
-  await loadAll();
-  alert("Course envoyée au chauffeur suivant.");
-}
   if (loading) {
     return (
       <main className="flex min-h-screen items-center justify-center">
