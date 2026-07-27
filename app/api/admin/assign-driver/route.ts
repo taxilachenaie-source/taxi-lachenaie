@@ -24,50 +24,7 @@ if (!auth.success) {
     }
   );
 }
-    /*
-     * 1. Vérifier la session de l’utilisateur connecté.
-     */
-    const authorization =
-      request.headers.get("authorization");
-
-    if (!authorization?.startsWith("Bearer ")) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: "Authentification requise.",
-        },
-        { status: 401 }
-      );
-    }
-
-    const accessToken = authorization
-      .slice("Bearer ".length)
-      .trim();
-
-    if (!accessToken) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: "Jeton d’authentification manquant.",
-        },
-        { status: 401 }
-      );
-    }
-
-    const {
-      data: { user },
-      error: userError,
-    } = await supabaseServer.auth.getUser(accessToken);
-
-    if (userError || !user) {
-      return NextResponse.json(
-        {
-          success: false,
-          error: "Session invalide ou expirée.",
-        },
-        { status: 401 }
-      );
-    }
+    
 
     /*
      * 2. Lire le JSON envoyé.
