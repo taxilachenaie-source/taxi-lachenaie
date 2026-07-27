@@ -37,11 +37,11 @@ export default function DispatchPage() {
   async function getAdminSession() {
     const {
       data: { session },
-      error,
+      error: sessionError,
     } = await supabase.auth.getSession();
 
-    if (error) {
-      console.error("Erreur récupération session admin :", error);
+    if (sessionError) {
+      console.error("Erreur récupération session admin :", sessionError);
       throw new Error(
         "Impossible de vérifier votre session. Veuillez vous reconnecter."
       );
@@ -53,7 +53,26 @@ export default function DispatchPage() {
       );
     }
 
-    return session;
+    const expiresAt = session.expires_at ?? 0;
+    const expiresSoon = expiresAt * 1000 <= Date.now() + 60_000;
+
+    if (!expiresSoon) {
+      return session;
+    }
+
+    const {
+      data: refreshed,
+      error: refreshError,
+    } = await supabase.auth.refreshSession();
+
+    if (refreshError || !refreshed.session) {
+      console.error("Erreur renouvellement session admin :", refreshError);
+      throw new Error(
+        "Votre session administrateur a expiré. Veuillez vous reconnecter."
+      );
+    }
+
+    return refreshed.session;
   }
 
   async function readJsonResponse(response: Response) {
@@ -68,22 +87,64 @@ export default function DispatchPage() {
     }
   }
 
+  async function adminFetch(
+    input: RequestInfo | URL,
+    init: RequestInit = {}
+  ) {
+    const session = await getAdminSession();
+    const headers = new Headers(init.headers);
+
+    headers.set("Authorization", `Bearer ${session.access_token}`);
+
+    return fetch(input, {
+      ...init,
+      headers,
+      cache: "no-store",
+    });
+  }
+
   useEffect(() => {
-    loadAll();
+    let cancelled = false;
 
-    const interval = setInterval(loadAll, 5000);
-
-    const schedulerInterval = setInterval(async () => {
+    async function initialize() {
       try {
-        await fetch("/api/admin/dispatch-scheduler");
-      } catch {
-        console.log("Scheduler temporairement indisponible");
+        await loadAll();
+      } catch (error) {
+        console.error("Erreur initialisation dispatch :", error);
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
       }
+    }
+
+    void initialize();
+
+    const interval = window.setInterval(() => {
+      void loadAll().catch((error) => {
+        console.error("Erreur actualisation dispatch :", error);
+      });
+    }, 5000);
+
+    const schedulerInterval = window.setInterval(() => {
+      void adminFetch("/api/admin/dispatch-scheduler")
+        .then(async (response) => {
+          if (!response.ok) {
+            const data = await readJsonResponse(response);
+            throw new Error(
+              data.error || "Scheduler temporairement indisponible."
+            );
+          }
+        })
+        .catch((error) => {
+          console.error("Erreur scheduler dispatch :", error);
+        });
     }, 10000);
 
     return () => {
-      clearInterval(interval);
-      clearInterval(schedulerInterval);
+      cancelled = true;
+      window.clearInterval(interval);
+      window.clearInterval(schedulerInterval);
     };
   }, []);
 
@@ -93,58 +154,67 @@ export default function DispatchPage() {
       loadReservations(),
       loadDispatchQueues(),
     ]);
-
-    setLoading(false);
   }
 
   async function loadDrivers() {
-    try {
-      const response = await fetch("/api/admin/drivers");
-      const data = await response.json();
+    const response = await adminFetch("/api/admin/drivers");
+    const data = await readJsonResponse(response);
 
-      if (Array.isArray(data)) {
-        setDrivers(data);
-      }
-    } catch {
-      console.log("Chauffeurs temporairement indisponibles");
+    if (!response.ok) {
+      throw new Error(
+        data.error || "Impossible de charger les chauffeurs."
+      );
+    }
+
+    if (Array.isArray(data)) {
+      setDrivers(data);
+      return;
+    }
+
+    if (Array.isArray(data.drivers)) {
+      setDrivers(data.drivers);
     }
   }
 
   async function loadReservations() {
-    try {
-      const response = await fetch("/api/admin/reservations");
-      const data = await response.json();
+    const response = await adminFetch("/api/admin/reservations");
+    const data = await readJsonResponse(response);
 
-      if (Array.isArray(data)) {
-        setReservations(data);
-      }
-    } catch {
-      console.log("Réservations temporairement indisponibles");
+    if (!response.ok) {
+      throw new Error(
+        data.error || "Impossible de charger les réservations."
+      );
+    }
+
+    if (Array.isArray(data)) {
+      setReservations(data);
+      return;
+    }
+
+    if (Array.isArray(data.reservations)) {
+      setReservations(data.reservations);
     }
   }
 
   async function loadDispatchQueues() {
-    try {
-      const response = await fetch("/api/admin/dispatch-queue");
-      const data = await response.json();
+    const response = await adminFetch("/api/admin/dispatch-queue");
+    const data = await readJsonResponse(response);
 
-      if (data.success) {
-        setDispatchQueues(data.queues || []);
-      }
-    } catch {
-      console.log("Dispatch Queue temporairement indisponible");
+    if (!response.ok || data.success === false) {
+      throw new Error(
+        data.error || "Impossible de charger la file de dispatch."
+      );
     }
+
+    setDispatchQueues(Array.isArray(data.queues) ? data.queues : []);
   }
 
   async function assignDriver(reservationId: number, driverId: number) {
     try {
-      const session = await getAdminSession();
-
-      const response = await fetch("/api/admin/assign-driver", {
+      const response = await adminFetch("/api/admin/assign-driver", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${session.access_token}`,
         },
         body: JSON.stringify({
           reservation_id: reservationId,
@@ -174,15 +244,12 @@ export default function DispatchPage() {
 
   async function topUpDriver(driverId: number, amount: number) {
     try {
-      const session = await getAdminSession();
-
-      const response = await fetch(
+      const response = await adminFetch(
         `/api/admin/drivers/${driverId}/topup`,
         {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            Authorization: `Bearer ${session.access_token}`,
           },
           body: JSON.stringify({ amount }),
         }
@@ -212,13 +279,10 @@ export default function DispatchPage() {
 
   async function autoDispatch(reservationId: number) {
     try {
-      const session = await getAdminSession();
-
-      const response = await fetch("/api/admin/auto-dispatch", {
+      const response = await adminFetch("/api/admin/auto-dispatch", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${session.access_token}`,
         },
         body: JSON.stringify({
           reservation_id: reservationId,
@@ -328,13 +392,10 @@ export default function DispatchPage() {
   });
   async function forceNextDriver(reservationId: number) {
     try {
-      const session = await getAdminSession();
-
-      const response = await fetch("/api/admin/dispatch-next", {
+      const response = await adminFetch("/api/admin/dispatch-next", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${session.access_token}`,
         },
         body: JSON.stringify({
           reservation_id: reservationId,
